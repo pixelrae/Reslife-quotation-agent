@@ -1,0 +1,242 @@
+{
+  "name": "ResLife Foods - 1. New Quote Request",
+  "nodes": [
+    {
+      "id": "webhook-trigger",
+      "name": "Webhook: New Quote Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1120, 0],
+      "parameters": {
+        "path": "quote-request",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "notes": "Called by the frontend form (see /frontend) with: { customer: {fullName, email, phone, companyName, billingAddress}, event: {date, time, deliveryLocation, deliveryMethod}, items: [{name, quantity}] }"
+    },
+    {
+      "id": "get-menu-items",
+      "name": "Get Active Menu Items",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [-880, 0],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name, unit_price, markup_percent FROM menu_items WHERE is_active = true;"
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "match-items",
+      "name": "Match Items & Flag Custom",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-640, 0],
+      "notes": "Normalises spelling/casing and does a simple fuzzy match. Anything below the similarity threshold is flagged is_custom = true instead of being rejected.",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const menuItems = $('Get Active Menu Items').all().map(i => i.json);\nconst body = $('Webhook: New Quote Request').first().json.body;\n\nfunction normalise(s) {\n  return String(s).toLowerCase().trim().replace(/[^a-z0-9 ]/g, '');\n}\n\n// Cheap fuzzy match: normalised exact match first, then token-overlap ratio.\nfunction bestMatch(rawName) {\n  const target = normalise(rawName);\n  let best = null;\n  let bestScore = 0;\n  for (const item of menuItems) {\n    const candidate = normalise(item.name);\n    if (candidate === target) return { item, score: 1 };\n    const targetTokens = new Set(target.split(' '));\n    const candTokens = new Set(candidate.split(' '));\n    const overlap = [...targetTokens].filter(t => candTokens.has(t)).length;\n    const score = overlap / Math.max(targetTokens.size, candTokens.size);\n    if (score > bestScore) { bestScore = score; best = item; }\n  }\n  return bestScore >= 0.6 ? { item: best, score: bestScore } : null;\n}\n\nconst results = (body.items || []).map(orderedItem => {\n  const match = bestMatch(orderedItem.name);\n  if (match) {\n    return {\n      item_name_raw: orderedItem.name,\n      quantity: orderedItem.quantity,\n      is_custom: false,\n      menu_item_id: match.item.id,\n      unit_price: Number(match.item.unit_price)\n    };\n  }\n  return {\n    item_name_raw: orderedItem.name,\n    quantity: orderedItem.quantity,\n    is_custom: true,\n    menu_item_id: null,\n    unit_price: null\n  };\n});\n\nreturn [{ json: { customer: body.customer, event: body.event, items: results } }];"
+      }
+    },
+    {
+      "id": "estimate-prices",
+      "name": "AI Estimate Cape Town Price (custom items)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-400, 0],
+      "notes": "Calls an LLM (with web search / retrieval on your provider's side, e.g. Claude or GPT with browsing tools enabled) to estimate a fair Cape Town catering-market price for each unmatched item, plus a one-line reason. Set ANTHROPIC_API_KEY / OPENAI_API_KEY in n8n's environment variables, not in this file.",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const data = $input.first().json;\nconst customItems = data.items.filter(i => i.is_custom);\n\nfor (const item of customItems) {\n  const prompt = `Estimate a fair, realistic ZAR price for ONE unit of this catering menu item, based on typical Cape Town, South Africa takeaway/catering prices in 2026: \"${item.item_name_raw}\". Reply ONLY as JSON: {\"price\": number, \"confidence\": \"low\"|\"medium\"|\"high\", \"reason\": \"one short sentence\"}`;\n\n  const response = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://api.anthropic.com/v1/messages',\n    headers: {\n      'x-api-key': $env.ANTHROPIC_API_KEY,\n      'anthropic-version': '2023-06-01',\n      'content-type': 'application/json'\n    },\n    body: {\n      model: 'claude-sonnet-4-6',\n      max_tokens: 200,\n      messages: [{ role: 'user', content: prompt }]\n    },\n    json: true\n  });\n\n  let parsed;\n  try {\n    const text = response.content.map(b => b.text || '').join('');\n    parsed = JSON.parse(text.replace(/```json|```/g, '').trim());\n  } catch (e) {\n    parsed = { price: null, confidence: 'low', reason: 'AI estimate failed - manager must price manually' };\n  }\n\n  item.ai_estimated_price = parsed.price;\n  item.ai_estimate_confidence = parsed.confidence;\n  item.ai_estimate_source = parsed.reason;\n  // The order still needs a number to show the customer, so use the\n  // estimate as a clearly-marked placeholder unit price.\n  item.unit_price = parsed.price;\n}\n\nreturn [{ json: data }];"
+      }
+    },
+    {
+      "id": "upsert-customer",
+      "name": "Upsert Customer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [-160, -120],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO customers (full_name, email, phone_number, company_name, billing_address)\nVALUES ($1, $2, $3, $4, $5)\nON CONFLICT (email) DO UPDATE SET full_name = EXCLUDED.full_name\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$json.customer.fullName, $json.customer.email, $json.customer.phone, $json.customer.companyName, $json.customer.billingAddress] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "calc-totals",
+      "name": "Calculate Quote Totals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [80, 0],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const data = $('AI Estimate Cape Town Price (custom items)').first().json;\nconst customerId = $('Upsert Customer').first().json.id;\n\nconst items = data.items.map(i => ({\n  ...i,\n  line_total: (i.unit_price || 0) * i.quantity,\n  price_status: i.is_custom ? 'estimated_placeholder' : 'confirmed'\n}));\n\nconst grandTotal = items.reduce((sum, i) => sum + i.line_total, 0);\nconst containsEstimate = items.some(i => i.is_custom);\nconst quoteNumber = 'RES-' + new Date().getFullYear().toString().slice(-2) + '-' + Math.floor(1000 + Math.random() * 9000);\n\nreturn [{ json: { customerId, quoteNumber, items, grandTotal, containsEstimate, event: data.event, customer: data.customer } }];"
+      }
+    },
+    {
+      "id": "insert-quote",
+      "name": "Insert Quote",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [320, 0],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO quotes (quote_number, customer_id, event_date, event_time, delivery_location, delivery_method, status, subtotal, grand_total, contains_estimate_flag, valid_until)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, now() + interval '14 days')\nRETURNING id, quote_number;",
+        "options": {
+          "queryReplacement": "={{ [$json.quoteNumber, $json.customerId, $json.event.date, $json.event.time, $json.event.deliveryLocation, $json.event.deliveryMethod, $json.containsEstimate ? 'pending_manager_review' : 'approved', $json.grandTotal, $json.containsEstimate] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "insert-quote-items",
+      "name": "Insert Quote Items",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [560, 0],
+      "notes": "Runs once per item (n8n executes a Postgres node once per input item automatically).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO quote_items (quote_id, menu_item_id, item_name_raw, quantity, unit_price, line_total, is_custom, price_status)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8)\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$('Insert Quote').first().json.id, $json.menu_item_id, $json.item_name_raw, $json.quantity, $json.unit_price, $json.line_total, $json.is_custom, $json.price_status] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "insert-custom-requests",
+      "name": "Insert Custom Item Requests",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [560, 180],
+      "notes": "Only fires for items where is_custom = true. Filter this branch with an IF node ahead of it if your n8n version needs it explicit.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO custom_item_requests (quote_id, quote_item_id, item_name, ai_estimated_price, ai_estimate_source, ai_estimate_confidence)\nVALUES ($1, $2, $3, $4, $5, $6);",
+        "options": {
+          "queryReplacement": "={{ [$('Insert Quote').first().json.id, $('Insert Quote Items').item.json.id, $json.item_name_raw, $json.ai_estimated_price, $json.ai_estimate_source, $json.ai_estimate_confidence] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "if-needs-review",
+      "name": "Needs Manager Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [800, 0],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{ $('Calculate Quote Totals').first().json.containsEstimate }}", "value2": true }
+          ]
+        }
+      }
+    },
+    {
+      "id": "notify-manager",
+      "name": "Email Manager: Review Needed",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1040, -120],
+      "parameters": {
+        "toEmail": "reslifefoods@gmail.com",
+        "subject": "=Quote {{ $('Insert Quote').first().json.quote_number }} needs your price review",
+        "text": "=A customer requested item(s) not yet in the catalogue. AI estimate(s) have been used as a placeholder so the customer already has a quote. Please review and confirm pricing:\n\n{{ $('Calculate Quote Totals').first().json.items.filter(i => i.is_custom).map(i => `- ${i.item_name_raw}: AI estimate R${i.ai_estimated_price} (${i.ai_estimate_source})`).join('\\n') }}\n\nApprove here: https://YOUR_DOMAIN/manager-review.html?quote={{ $('Insert Quote').first().json.quote_number }}"
+      },
+      "credentials": { "smtp": { "id": "reslife-smtp", "name": "ResLife Email" } }
+    },
+    {
+      "id": "generate-pdf",
+      "name": "Generate PDF Quote",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1040, 100],
+      "notes": "Calls a lightweight HTML-to-PDF service (e.g. self-hosted gotenberg, or a service like pdfshift/api2pdf) rendering the /frontend/quote-template.html with this quote's data. Replaces AutoCrat.",
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR_PDF_SERVICE/generate",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "quote_number", "value": "={{ $('Insert Quote').first().json.quote_number }}" },
+            { "name": "customer", "value": "={{ $('Calculate Quote Totals').first().json.customer }}" },
+            { "name": "items", "value": "={{ $('Calculate Quote Totals').first().json.items }}" },
+            { "name": "grand_total", "value": "={{ $('Calculate Quote Totals').first().json.grandTotal }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "email-customer",
+      "name": "Email Customer: Quote Attached",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1280, 100],
+      "parameters": {
+        "toEmail": "={{ $('Calculate Quote Totals').first().json.customer.email }}",
+        "subject": "=Your ResLife Foods quote {{ $('Insert Quote').first().json.quote_number }}",
+        "text": "Thanks for your order! Your quote is attached. It's valid for 14 days.",
+        "attachments": "={{ $('Generate PDF Quote').first().binary }}"
+      },
+      "credentials": { "smtp": { "id": "reslife-smtp", "name": "ResLife Email" } }
+    },
+    {
+      "id": "log-order",
+      "name": "Log Order Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1520, 100],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE quotes SET status = 'sent', sent_at = now() WHERE id = $1;\nINSERT INTO order_status_log (quote_id, status, note) VALUES ($1, 'sent', 'Auto-sent, no custom items required review.');",
+        "options": {
+          "queryReplacement": "={{ [$('Insert Quote').first().json.id] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "respond-webhook",
+      "name": "Respond to Frontend",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1520, -120],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": $('Calculate Quote Totals').first().json.containsEstimate ? \"pending_review\" : \"sent\", \"quoteNumber\": $('Insert Quote').first().json.quote_number, \"estimatedTotal\": $('Calculate Quote Totals').first().json.grandTotal } }}"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: New Quote Request": { "main": [[{ "node": "Get Active Menu Items", "type": "main", "index": 0 }]] },
+    "Get Active Menu Items": { "main": [[{ "node": "Match Items & Flag Custom", "type": "main", "index": 0 }]] },
+    "Match Items & Flag Custom": { "main": [[{ "node": "AI Estimate Cape Town Price (custom items)", "type": "main", "index": 0 }]] },
+    "AI Estimate Cape Town Price (custom items)": { "main": [[{ "node": "Upsert Customer", "type": "main", "index": 0 }]] },
+    "Upsert Customer": { "main": [[{ "node": "Calculate Quote Totals", "type": "main", "index": 0 }]] },
+    "Calculate Quote Totals": { "main": [[{ "node": "Insert Quote", "type": "main", "index": 0 }]] },
+    "Insert Quote": { "main": [[{ "node": "Insert Quote Items", "type": "main", "index": 0 }]] },
+    "Insert Quote Items": {
+      "main": [[
+        { "node": "Insert Custom Item Requests", "type": "main", "index": 0 },
+        { "node": "Needs Manager Review?", "type": "main", "index": 0 }
+      ]]
+    },
+    "Needs Manager Review?": {
+      "main": [
+        [{ "node": "Email Manager: Review Needed", "type": "main", "index": 0 }, { "node": "Respond to Frontend", "type": "main", "index": 0 }],
+        [{ "node": "Generate PDF Quote", "type": "main", "index": 0 }]
+      ]
+    },
+    "Generate PDF Quote": { "main": [[{ "node": "Email Customer: Quote Attached", "type": "main", "index": 0 }]] },
+    "Email Customer: Quote Attached": { "main": [[{ "node": "Log Order Status", "type": "main", "index": 0 }]] },
+    "Log Order Status": { "main": [[{ "node": "Respond to Frontend", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}

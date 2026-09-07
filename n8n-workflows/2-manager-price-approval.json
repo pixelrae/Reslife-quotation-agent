@@ -1,0 +1,221 @@
+{
+  "name": "ResLife Foods - 2. Manager Price Approval",
+  "nodes": [
+    {
+      "id": "webhook-approve",
+      "name": "Webhook: Manager Approval",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-800, 0],
+      "parameters": {
+        "path": "manager-approve",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "notes": "Called from /frontend/manager-review.html. Body: { customItemRequestId, approvedPrice, markupPercent, managerName }"
+    },
+    {
+      "id": "get-request",
+      "name": "Get Custom Item Request",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [-560, 0],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT cir.*, qi.quantity, qi.item_name_raw, qi.quote_id\nFROM custom_item_requests cir\nJOIN quote_items qi ON qi.id = cir.quote_item_id\nWHERE cir.id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$json.body.customItemRequestId] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "update-request",
+      "name": "Update Custom Item Request",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [-320, -120],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE custom_item_requests\nSET status = 'approved', manager_approved_price = $1, manager_markup_percent = $2, resolved_by = $3, resolved_at = now()\nWHERE id = $4;",
+        "options": {
+          "queryReplacement": "={{ [$('Webhook: Manager Approval').first().json.body.approvedPrice, $('Webhook: Manager Approval').first().json.body.markupPercent, $('Webhook: Manager Approval').first().json.body.managerName, $('Webhook: Manager Approval').first().json.body.customItemRequestId] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "upsert-menu-item",
+      "name": "Upsert Menu Item (grow the catalogue)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [-320, 0],
+      "notes": "This is the step that solves 'add the item to the database' - the custom item becomes a normal catalogue item, priced with the manager's markup, so it is matched automatically next time.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO menu_items (name, unit_price, markup_percent, source)\nVALUES ($1, $2, $3, 'manager_confirmed')\nON CONFLICT (LOWER(name)) DO UPDATE\n  SET unit_price = EXCLUDED.unit_price, markup_percent = EXCLUDED.markup_percent, source = 'manager_confirmed', updated_at = now()\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$('Get Custom Item Request').first().json.item_name_raw, $('Webhook: Manager Approval').first().json.body.approvedPrice, $('Webhook: Manager Approval').first().json.body.markupPercent] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "log-price-history",
+      "name": "Log Price History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [-80, 0],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO price_history (menu_item_id, old_price, new_price, changed_by, reason)\nVALUES ($1, $2, $3, $4, 'Manager confirmed price for a customer-requested custom item');",
+        "options": {
+          "queryReplacement": "={{ [$('Upsert Menu Item (grow the catalogue)').first().json.id, $('Get Custom Item Request').first().json.ai_estimated_price, $('Webhook: Manager Approval').first().json.body.approvedPrice, $('Webhook: Manager Approval').first().json.body.managerName] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "update-quote-item",
+      "name": "Update Quote Item Price",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [160, 0],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE quote_items\nSET unit_price = $1, line_total = $1 * quantity, price_status = 'confirmed', menu_item_id = $2\nWHERE id = (SELECT quote_item_id FROM custom_item_requests WHERE id = $3);",
+        "options": {
+          "queryReplacement": "={{ [$('Webhook: Manager Approval').first().json.body.approvedPrice, $('Upsert Menu Item (grow the catalogue)').first().json.id, $('Webhook: Manager Approval').first().json.body.customItemRequestId] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "recalc-total",
+      "name": "Recalculate Quote Total",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [400, 0],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE quotes SET grand_total = (SELECT COALESCE(SUM(line_total), 0) FROM quote_items WHERE quote_id = $1), subtotal = (SELECT COALESCE(SUM(line_total), 0) FROM quote_items WHERE quote_id = $1)\nWHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Get Custom Item Request').first().json.quote_id] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "check-remaining",
+      "name": "Any Items Still Pending?",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [640, 0],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT count(*) AS pending_count FROM custom_item_requests WHERE quote_id = $1 AND status = 'pending';",
+        "options": {
+          "queryReplacement": "={{ [$('Get Custom Item Request').first().json.quote_id] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "if-all-confirmed",
+      "name": "All Items Confirmed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 0],
+      "parameters": {
+        "conditions": {
+          "number": [
+            { "value1": "={{ Number($json.pending_count) }}", "operation": "equal", "value2": 0 }
+          ]
+        }
+      }
+    },
+    {
+      "id": "generate-final-pdf",
+      "name": "Generate Final PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1120, -80],
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR_PDF_SERVICE/generate",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "quote_id", "value": "={{ $('Get Custom Item Request').first().json.quote_id }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "email-final-quote",
+      "name": "Email Customer: Final Confirmed Quote",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1360, -80],
+      "parameters": {
+        "toEmail": "={{ $('Get Custom Item Request').first().json.customer_email }}",
+        "subject": "Your ResLife Foods quote has been confirmed",
+        "text": "All pricing on your quote has now been confirmed by our team. Final quote attached.",
+        "attachments": "={{ $('Generate Final PDF').first().binary }}"
+      },
+      "credentials": { "smtp": { "id": "reslife-smtp", "name": "ResLife Email" } }
+    },
+    {
+      "id": "mark-quote-approved",
+      "name": "Mark Quote Approved",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1600, -80],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE quotes SET status = 'sent', sent_at = now(), contains_estimate_flag = false WHERE id = $1;\nINSERT INTO order_status_log (quote_id, status, note) VALUES ($1, 'sent', 'All custom items confirmed by manager; final quote sent.');",
+        "options": {
+          "queryReplacement": "={{ [$('Get Custom Item Request').first().json.quote_id] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "reslife-postgres", "name": "ResLife Postgres" } }
+    },
+    {
+      "id": "respond-approve",
+      "name": "Respond to Manager Dashboard",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 120],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"approved\", \"itemName\": $('Get Custom Item Request').first().json.item_name_raw, \"newCatalogPrice\": $('Webhook: Manager Approval').first().json.body.approvedPrice } }}"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: Manager Approval": { "main": [[{ "node": "Get Custom Item Request", "type": "main", "index": 0 }]] },
+    "Get Custom Item Request": {
+      "main": [[
+        { "node": "Update Custom Item Request", "type": "main", "index": 0 },
+        { "node": "Upsert Menu Item (grow the catalogue)", "type": "main", "index": 0 }
+      ]]
+    },
+    "Upsert Menu Item (grow the catalogue)": { "main": [[{ "node": "Log Price History", "type": "main", "index": 0 }]] },
+    "Log Price History": { "main": [[{ "node": "Update Quote Item Price", "type": "main", "index": 0 }]] },
+    "Update Quote Item Price": { "main": [[{ "node": "Recalculate Quote Total", "type": "main", "index": 0 }]] },
+    "Recalculate Quote Total": { "main": [[{ "node": "Any Items Still Pending?", "type": "main", "index": 0 }]] },
+    "Any Items Still Pending?": { "main": [[{ "node": "All Items Confirmed?", "type": "main", "index": 0 }]] },
+    "All Items Confirmed?": {
+      "main": [
+        [{ "node": "Generate Final PDF", "type": "main", "index": 0 }],
+        [{ "node": "Respond to Manager Dashboard", "type": "main", "index": 0 }]
+      ]
+    },
+    "Generate Final PDF": { "main": [[{ "node": "Email Customer: Final Confirmed Quote", "type": "main", "index": 0 }]] },
+    "Email Customer: Final Confirmed Quote": { "main": [[{ "node": "Mark Quote Approved", "type": "main", "index": 0 }]] },
+    "Mark Quote Approved": { "main": [[{ "node": "Respond to Manager Dashboard", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}

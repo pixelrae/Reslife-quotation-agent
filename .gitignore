@@ -1,0 +1,21 @@
+# Environment / secrets
+.env
+.env.*
+*.pem
+
+# n8n local data
+.n8n/
+
+# Database
+*.sql.bak
+pgdata/
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+*.swp
+
+# Generated previews (sample-data/ reference PDFs are intentionally tracked)
+frontend/*.pdf
+preview*.png

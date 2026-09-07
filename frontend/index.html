@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ResLife Foods — Get a Catering Quote</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Space+Mono:wght@400;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="topbar__brand">
+      <span class="topbar__mark">RF</span>
+      <span class="topbar__name">ResLife Foods</span>
+    </div>
+    <span class="topbar__tag">Eat · Laugh · Live</span>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero__copy">
+        <h1>Get a catering quote without waiting on a reply.</h1>
+        <p class="hero__lede">
+          Tell us what you need. If it's on our menu, you get a price in
+          seconds. If it's something new, our system estimates a fair
+          price straight away and our team confirms it — no order ever
+          sits unanswered in a WhatsApp thread.
+        </p>
+        <a href="#order-form" class="btn btn--primary">Start a quote</a>
+      </div>
+
+      <div class="hero__ticket" aria-hidden="true">
+        <div class="ticket">
+          <div class="ticket__row ticket__row--head">
+            <span>QUOTE</span>
+            <span class="ticket__mono">RES-26-014</span>
+          </div>
+          <div class="ticket__divider"></div>
+          <div class="ticket__row">
+            <span>Chicken Burger + Chips ×30</span>
+            <span class="ticket__mono">R 1,650</span>
+          </div>
+          <div class="ticket__row">
+            <span>Boerewors Roll ×40 <em>new item</em></span>
+            <span class="ticket__mono">R 1,200*</span>
+          </div>
+          <div class="ticket__divider"></div>
+          <div class="ticket__row ticket__row--total">
+            <span>Estimated total</span>
+            <span class="ticket__mono">R 2,850</span>
+          </div>
+          <p class="ticket__note">*New item — price estimated, pending confirmation</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="how">
+      <h2>How your quote gets priced</h2>
+      <ol class="how__list">
+        <li>
+          <span class="how__num">1</span>
+          <div>
+            <h3>Already on our menu</h3>
+            <p>Instant, confirmed price — no waiting.</p>
+          </div>
+        </li>
+        <li>
+          <span class="how__num">2</span>
+          <div>
+            <h3>Something new</h3>
+            <p>You still get a quote immediately, clearly marked as an estimate based on typical Cape Town catering prices.</p>
+          </div>
+        </li>
+        <li>
+          <span class="how__num">3</span>
+          <div>
+            <h3>We confirm it</h3>
+            <p>Our team checks the price, you get a final confirmed quote by email — and it's on the menu for next time.</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="order" id="order-form">
+      <h2>Request a quote</h2>
+
+      <form id="quoteForm" class="ticket ticket--form" novalidate>
+        <fieldset>
+          <legend>Your details</legend>
+          <div class="field-row">
+            <label>
+              Full name
+              <input type="text" name="fullName" required>
+            </label>
+            <label>
+              Email
+              <input type="email" name="email" required>
+            </label>
+          </div>
+          <div class="field-row">
+            <label>
+              Phone
+              <input type="tel" name="phone">
+            </label>
+            <label>
+              Company / group name
+              <input type="text" name="companyName">
+            </label>
+          </div>
+        </fieldset>
+
+        <div class="ticket__divider"></div>
+
+        <fieldset>
+          <legend>Event details</legend>
+          <div class="field-row">
+            <label>
+              Event date
+              <input type="date" name="eventDate" required>
+            </label>
+            <label>
+              Event time
+              <input type="time" name="eventTime">
+            </label>
+          </div>
+          <label class="field-full">
+            Delivery location
+            <input type="text" name="deliveryLocation" placeholder="e.g. UWC Life Sciences building">
+          </label>
+        </fieldset>
+
+        <div class="ticket__divider"></div>
+
+        <fieldset>
+          <legend>Order items</legend>
+          <div id="itemRows" class="item-rows">
+            <div class="item-row">
+              <input type="text" class="item-name" placeholder="Item name, e.g. Chicken Burger + Chips" required>
+              <input type="number" class="item-qty" placeholder="Qty" min="1" value="1" required>
+            </div>
+          </div>
+          <button type="button" id="addItemBtn" class="btn btn--ghost">+ Add another item</button>
+          <p class="hint">Not sure of the exact name? Describe it — we'll match it or price it as new.</p>
+        </fieldset>
+
+        <div class="ticket__divider"></div>
+
+        <button type="submit" class="btn btn--primary btn--full">Send my quote request</button>
+        <p id="formStatus" class="form-status" role="status"></p>
+      </form>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>ResLife Foods · Robert Sobukwe, UWC Bellville, 7353 · reslifefoods@gmail.com · 021 777 3333</p>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

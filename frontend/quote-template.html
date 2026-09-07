@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Quote {{quote_number}}</title>
+<style>
+  /* Kept deliberately simple/print-safe: this is rendered server-side by
+     a headless-Chromium PDF service (see /n8n-workflows/README.md), so
+     avoid webfont loading delays and JS entirely. */
+  body { font-family: Georgia, 'Times New Roman', serif; color: #241C15; margin: 48px; }
+  h1 { font-size: 28px; margin-bottom: 0; }
+  .meta { color: #5B5245; font-size: 13px; margin: 4px 0 24px; }
+  table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+  th, td { text-align: left; padding: 8px 4px; border-bottom: 1px solid #D8CBB3; font-size: 14px; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #5B5245; }
+  .total-row td { font-weight: bold; border-top: 2px solid #241C15; border-bottom: none; }
+  .estimate-flag { color: #C1502E; font-size: 12px; }
+  .note { font-size: 12px; color: #5B5245; margin-top: 24px; }
+  .terms { font-size: 11px; color: #5B5245; margin-top: 32px; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <h1>QUOTATION</h1>
+  <div class="meta">
+    Quote {{quote_number}} · Issued {{date_issued}} · reslifefoods@gmail.com · 021 777 3333
+  </div>
+
+  <p><strong>Billed to:</strong> {{customer.fullName}} ({{customer.email}})<br>
+     {{customer.companyName}}<br>
+     {{customer.billingAddress}}</p>
+
+  <p><strong>Event:</strong> {{event.date}} at {{event.time}} — {{event.deliveryLocation}}</p>
+
+  <table>
+    <thead>
+      <tr><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th></tr>
+    </thead>
+    <tbody>
+      <!-- Templated by the PDF service per quote_item; e.g. with Handlebars/Nunjucks: -->
+      <!-- {{#each items}} -->
+      <tr>
+        <td>{{this.item_name_raw}}{{#if this.is_custom}} <span class="estimate-flag">(estimate)</span>{{/if}}</td>
+        <td>{{this.quantity}}</td>
+        <td>R {{this.unit_price}}</td>
+        <td>R {{this.line_total}}</td>
+      </tr>
+      <!-- {{/each}} -->
+    </tbody>
+    <tfoot>
+      <tr class="total-row"><td colspan="3">Grand total</td><td>R {{grand_total}}</td></tr>
+    </tfoot>
+  </table>
+
+  <p class="note">**Items marked "estimate" are priced from typical Cape Town market rates and are subject to final manager confirmation.</p>
+
+  <div class="terms">
+    <strong>Terms and Conditions:</strong><br>
+    Quote valid for 14 days from date issued. Payment due within 48 hours of acceptance.
+    All function food needs must be confirmed 48 hours prior to the event. Cancellations
+    within 48 hours of the event are charged in full.
+  </div>
+</body>
+</html>
